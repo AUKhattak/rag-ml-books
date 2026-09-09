@@ -75,7 +75,7 @@ class PDFLoader:
             page = doc[page_num]
             
             # 1. Extract text with comprehensive cleaning
-            text = page.get_text()
+            text = str(page.get_text())
             
             # Use TextCleaner for all cleaning
             text = self.text_cleaner.clean_text(
@@ -211,13 +211,13 @@ class PDFLoader:
     
     def save_to_disk(self, documents: List[Document], output_path: str):
         """Save parsed documents to disk"""
-        output_path = Path(output_path)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path = Path(output_path)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
         
         # Convert to dict
         data = [asdict(doc) for doc in documents]
         
-        with open(output_path, 'w', encoding='utf-8') as f:
+        with open(out_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
             
-        logger.info(f"💾 Saved {len(documents)} documents to {output_path}")
+        logger.info(f"💾 Saved {len(documents)} documents to {out_path}")

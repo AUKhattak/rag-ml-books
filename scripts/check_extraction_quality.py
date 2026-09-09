@@ -182,7 +182,7 @@ class ExtractionQualityAnalyzer:
         # Calculate math preservation quality
         total_math_pages = len(math_analysis['pages_with_math'])
         total_pages = len(self.documents)
-        math_analysis['math_preservation_quality'] = min(100, (total_math_pages / total_pages) * 200)
+        math_analysis['math_preservation_quality'] = int(min(100, (total_math_pages / total_pages) * 200))
         
         # Check for broken math (common issues)
         broken_patterns = [
@@ -390,7 +390,7 @@ class ExtractionQualityAnalyzer:
     
     def _generate_chunking_recommendations(self, results: Dict) -> Dict:
         """Generate specific chunking recommendations based on quality analysis"""
-        recommendations = {
+        recommendations: Dict[str, Any] = {
             'chunk_size': 0,
             'overlap_size': 0,
             'strategies': [],
