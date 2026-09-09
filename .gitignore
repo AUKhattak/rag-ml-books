@@ -1,0 +1,152 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environment
+venv/
+env/
+ENV/
+.venv
+env.bak/
+venv.bak/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+*.iml
+
+# Jupyter Notebooks
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+*/.ipynb_checkpoints/
+
+# Data files
+data/raw/pdfs/*.pdf
+data/raw/metadata/*.json
+data/processed/chunks/*.parquet
+data/processed/chunks/*.jsonl
+data/processed/embeddings/*.npy
+data/processed/indices/faiss_index_v1/
+data/evaluation/golden_dataset/*.json
+data/evaluation/test_results/*.csv
+data/evaluation/test_results/*.json
+data/evaluation/artifacts/*.png
+data/evaluation/artifacts/*.html
+
+# Artifacts
+artifacts/models/
+artifacts/logs/
+artifacts/reports/
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+.env.example
+
+# Logs
+*.log
+logs/
+*.log.1
+*.log.2
+
+# Test files
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+*.cover
+.hypothesis/
+*.mo
+*.pot
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Vector databases
+*.faiss
+*.hnsw
+*.ann
+
+# Checkpoint files
+*.ckpt
+*.h5
+*.pth
+*.pt
+*.pkl
+*.pickle
+
+# MyPy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre
+.pyre/
+
+# pytype
+.pytype/
+
+# Profiling data
+*.prof
+
+# OS files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Backup files
+*.bak
+*.tmp
+*.temp
+
+# Documentation built files
+docs/_build/
+docs/api/
+
+# Jupyter secret files
+jupyter_notebook_config.json
+
+# Python package lock files
+poetry.lock
+Pipfile.lock
+
+# Terraform
+*.tfstate
+*.tfstate.*
+.terraform/
+
+# Kubernetes
+*.kubeconfig
+helm/values.local.yaml
+
+# Local development
+local/
+tmp/
+temp/
+*.local.yaml
