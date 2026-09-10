@@ -44,6 +44,7 @@ venv.bak/
 */.ipynb_checkpoints/
 
 # Data files
+data/*
 data/raw/pdfs/*.pdf
 data/raw/metadata/*.json
 data/processed/chunks/*.parquet
