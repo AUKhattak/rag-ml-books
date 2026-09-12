@@ -64,6 +64,10 @@ Comprehensive text cleaning utility optimized for ML book PDFs.
   - Subsection detection (1712 subsections found)
   - Figure and table captions
 
+- **Chunking Preparation**: Support for downstream chunking strategies
+  - Specialized `clean_for_chunking` method that protects math blocks
+  - Extracts metrics like math density, equation count, and average word length
+
 ### 2. PDF Loader (`src/ingestion/pdf_loader.py`)
 
 Production-grade PDF loader with image extraction and text cleaning.
@@ -121,6 +125,16 @@ Main orchestration script for the ingestion pipeline.
 4. Saves documents to `data/processed/chunks/documents_v1.json`
 5. Generates statistics (pages, words, images per book)
 
+### 4. Quality Analyzer (`scripts/check_extraction_quality.py`)
+
+Comprehensive quality validation script to verify extraction accuracy and generate downstream instructions.
+
+**Key Features:**
+- **Quality Scoring**: Multi-dimensional grading (0-100) based on text legibility, structural preservation, and empty page detection.
+- **Math & Text Validation**: Tracks math density against expected baselines for ML books and flags garbled/mojibake text or broken equations.
+- **Structural Check**: Verifies preservation of headers, theorems, tables, and figures.
+- **Dynamic Chunking Recommendations**: Dynamically suggests chunk sizes, overlap parameters, and semantic chunking strategies based on text properties (e.g., suggesting smaller chunks with math-aware strategies when math density is >30%).
+
 ## 🚀 Usage
 
 ### Prerequisites
@@ -161,6 +175,10 @@ After ingestion, run the quality validation:
 python scripts/check_extraction_quality.py
 ```
 
+**Output Reports:**
+- `data/processed/chunks/extraction_quality_report.txt`: Human-readable summary
+- `data/processed/chunks/quality_metrics.json`: Detailed machine-readable metrics
+
 **Expected Quality Metrics:**
 - Quality Score: 67/100 (improved from 67, missing spaces fixed)
 - Missing Spaces: 0 pages (was 743 pages / 48%)
@@ -168,6 +186,7 @@ python scripts/check_extraction_quality.py
 - Garbled Text: 2 pages
 - Sections Found: 693+
 - Images Extracted: 281
+- Recommended Chunk Size: Adaptive (e.g., 512 for high-math pages, 1024 otherwise)
 
 ## 📊 Performance Metrics
 

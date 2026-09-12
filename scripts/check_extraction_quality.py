@@ -5,7 +5,7 @@ from pathlib import Path
 from collections import defaultdict, Counter
 import re
 import statistics
-from typing import Dict, List, Tuple, Any
+from typing import Dict, List, Tuple, Any, Optional
 import math
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -460,7 +460,7 @@ class ExtractionQualityAnalyzer:
         
         return recommendations
     
-    def generate_report(self, results: Dict = None) -> str:
+    def generate_report(self, results: Optional[Dict] = None) -> str:
         """Generate human-readable report"""
         if results is None:
             results = self.analyze_extraction_quality()
@@ -597,7 +597,7 @@ class ExtractionQualityAnalyzer:
         
         return "\n".join(report)
     
-    def export_detailed_metrics(self, results: Dict = None) -> Dict:
+    def export_detailed_metrics(self, results: Optional[Dict] = None) -> Dict:
         """Export detailed metrics for programmatic use"""
         if results is None:
             results = self.analyze_extraction_quality()
