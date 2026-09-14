@@ -1,7 +1,7 @@
 ## 📄 Minimal README.md
 
 ```markdown
-# 📚 RAG System for Machine Learning Books
+# RAG System for Machine Learning Books
 
 Production-ready RAG system for ML textbooks — ingests PDFs, chunks, embeds, retrieves, generates.
 
@@ -36,7 +36,7 @@ rag_ml_books/
 └── README.md
 ```
 
-## 🚀 Quick Start
+## Quick Start
 
 ```bash
 # Setup
@@ -53,7 +53,7 @@ python scripts/chunk_verify.py             # Verify chunks
 python scripts/test_embeddings.py          # Test embedder (5 chunks)
 ```
 
-## 📊 Scripts
+## Scripts
 
 | Script | Purpose |
 |--------|---------|
@@ -63,7 +63,7 @@ python scripts/test_embeddings.py          # Test embedder (5 chunks)
 | `chunk_verify.py` | Show chunk stats (count, size, samples) |
 | `test_embeddings.py` | Test embedder with 5 chunks + cache |
 
-## 📦 Dependencies
+## Dependencies
 
 ```txt
 pymupdf>=1.23.0
@@ -76,7 +76,7 @@ pyarrow>=14.0.0
 
 Install: `pip install -r requirements.txt`
 
-## 🛠️ Commands
+## Commands
 
 ```bash
 # Activate env
@@ -96,7 +96,7 @@ python -c "from src.embedding.cache_manager import CacheManager; print(CacheMana
 rm -rf data/processed/chunks/* data/cache/embeddings/*
 ```
 
-## 📈 Status
+## Status
 
 | Stage | Status |
 |-------|--------|
@@ -116,24 +116,17 @@ rm -rf data/processed/chunks/* data/cache/embeddings/*
 
 **Models:** `bge-small` (384d) · `bge-large` (1024d) · `all-mpnet` (768d) · `openai-small` (1536d)
 
-## 🎯 Next Steps
+## Next Steps
 
 1. `python scripts/test_embeddings.py`
 2. Create `scripts/generate_embeddings.py` → embed all 1,728 chunks
 3. Build vector index (FAISS/ChromaDB)
 4. Implement retrieval + generation
 
-## 📝 Notes
+## Notes
 
 - **Chunking:** 500 chars, 100 overlap, min 50 chars
 - **Cache:** MD5(chunk_id) → embedding, saved once per run
 - **Cache invalidated** by chunk size or model change
 
 ---
-
-**Version:** 1.1.0 · **Updated:** Sept 2026
-```
-
----
-
-**~70 lines instead of ~700. Everything essential, nothing extra.** 🚀
