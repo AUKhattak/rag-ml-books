@@ -1,9 +1,3 @@
-# scripts/generate_embeddings.py
-"""
-Generate embeddings for ALL chunks (both books).
-Run: python scripts/generate_embeddings.py
-"""
-
 import json
 import logging
 import sys

@@ -1,4 +1,3 @@
-# src/embedding/cache_manager.py
 import hashlib
 import logging
 import pickle
