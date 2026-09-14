@@ -1,4 +1,3 @@
-# src/utils/text_cleaner.py
 """
 Text cleaning utilities for ML book PDF extraction.
 Optimized for chunking strategy with math-aware preprocessing.

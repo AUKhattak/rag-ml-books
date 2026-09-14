@@ -1,8 +1,3 @@
-"""
-Run the chunker on documents_v1.json
-Usage: python scripts/chunk_documents.py
-"""
-
 import json
 import logging
 import sys

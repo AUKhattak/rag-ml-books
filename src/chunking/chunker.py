@@ -1,9 +1,3 @@
-# src/ingestion/chunker.py
-"""
-Document Chunker for RAG Pipeline
-Splits documents into semantic chunks with configurable size and overlap
-"""
-
 import hashlib
 import json
 import logging
