@@ -12,6 +12,7 @@ dependencies = [
     "sentence-transformers",
     "pandas",
     "pyarrow",
+    "faiss-cpu",
 ]
 
 [project.optional-dependencies]
