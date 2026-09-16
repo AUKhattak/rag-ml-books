@@ -13,6 +13,8 @@ dependencies = [
     "pandas",
     "pyarrow",
     "faiss-cpu",
+    "google-genai",
+    "python-dotenv",
 ]
 
 [project.optional-dependencies]

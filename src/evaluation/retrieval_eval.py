@@ -1,9 +1,9 @@
 """
-Retrieval evaluation against a golden dataset.
+Retrieval evaluation against a golden dataset, using an LLM as judge.
 
-For each golden query, run retrieval and check whether any of the top-k
-returned chunks matches the golden (book, page). Reports Recall@k, MRR,
-and Precision@k overall, per book, and per difficulty.
+For each golden query, run retrieval and ask the judge whether any of the
+top-k returned chunks answers the query. Reports Recall@k, MRR, and
+Precision@k overall, per book, and per difficulty.
 """
 
 from __future__ import annotations
@@ -12,8 +12,9 @@ import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
+from evaluation.judge import chunk_answers_query
 from retrieval.retriever import Retriever
 
 logger = logging.getLogger(__name__)
@@ -27,8 +28,6 @@ class GoldenEntry:
     id: str
     book: str
     query: str
-    gold_pages: list[int]
-    gold_section: str
     difficulty: str
     expected_answer_summary: str
     notes: str = ""
@@ -38,8 +37,9 @@ class GoldenEntry:
 class QueryResult:
     entry: GoldenEntry
     hit: bool
-    rank: int | None  # rank of first correct chunk (1-based), None if not found
+    rank: int | None  # rank of first judged-relevant chunk (1-based)
     best_score: float
+    chunk_judgments: list[bool] = field(default_factory=list)
     retrieved: list[dict[str, Any]] = field(default_factory=list)
 
 
@@ -63,8 +63,6 @@ def load_golden_dataset(path: str | Path) -> list[GoldenEntry]:
                     id=obj["id"],
                     book=obj["book"],
                     query=obj["query"],
-                    gold_pages=list(obj["gold_pages"]),
-                    gold_section=obj.get("gold_section", ""),
                     difficulty=obj["difficulty"],
                     expected_answer_summary=obj.get("expected_answer_summary", ""),
                     notes=obj.get("notes", ""),
@@ -73,44 +71,41 @@ def load_golden_dataset(path: str | Path) -> list[GoldenEntry]:
     return entries
 
 
-# ─── Matching ──────────────────────────────────────────────────────── #
-
-
-def is_match(retrieved: dict[str, Any], entry: GoldenEntry) -> bool:
-    """
-    A retrieved chunk matches if its book title and page number
-    are both in the golden entry's acceptable sets.
-    """
-    return retrieved.get("book") == entry.book and retrieved.get("page") in entry.gold_pages
-
-
 # ─── Evaluation ────────────────────────────────────────────────────── #
 
 
 class RetrievalEvaluator:
     """Runs the golden dataset through a Retriever and computes metrics."""
 
-    def __init__(self, retriever: Retriever):
+    def __init__(self, retriever: Retriever, judge: Callable[[str], str]):
         self.retriever = retriever
+        self.judge = judge
 
     def evaluate(
         self,
         entries: list[GoldenEntry],
         k: int = 5,
     ) -> list[QueryResult]:
-        """Run every golden query and record whether the gold page was retrieved."""
         results: list[QueryResult] = []
 
         for entry in entries:
             retrieved = self.retriever.search(entry.query, k=k)
 
+            judgments: list[bool] = []
             rank: int | None = None
             best_score = 0.0
+
             for r_idx, chunk in enumerate(retrieved, start=1):
-                if is_match(chunk, entry):
+                is_hit = chunk_answers_query(
+                    chunk_content=chunk.get("content", ""),
+                    query=entry.query,
+                    expected_answer_summary=entry.expected_answer_summary,
+                    judge=self.judge,
+                )
+                judgments.append(is_hit)
+                if is_hit and rank is None:
                     rank = r_idx
                     best_score = chunk.get("score", 0.0)
-                    break
 
             results.append(
                 QueryResult(
@@ -118,6 +113,7 @@ class RetrievalEvaluator:
                     hit=rank is not None,
                     rank=rank,
                     best_score=best_score,
+                    chunk_judgments=judgments,
                     retrieved=retrieved,
                 )
             )
@@ -126,7 +122,6 @@ class RetrievalEvaluator:
 
     @staticmethod
     def summarize(results: list[QueryResult], k: int) -> dict[str, Any]:
-        """Compute aggregate metrics from a list of QueryResults."""
         n = len(results)
         if n == 0:
             return {}
@@ -134,9 +129,10 @@ class RetrievalEvaluator:
         recall_at_1 = sum(1 for r in results if r.rank == 1) / n
         recall_at_k = sum(1 for r in results if r.hit) / n
         mrr = sum(1.0 / r.rank for r in results if r.rank is not None) / n
-        precision_at_k = sum(
-            sum(1 for c in r.retrieved if is_match(c, r.entry)) for r in results
-        ) / (n * k)
+
+        total_judged = sum(len(r.chunk_judgments) for r in results)
+        total_hits = sum(sum(r.chunk_judgments) for r in results)
+        precision_at_k = (total_hits / total_judged) if total_judged else 0.0
 
         return {
             "n": n,
@@ -153,8 +149,7 @@ class RetrievalEvaluator:
         k: int,
         key_fn,
         label: str,
-    ) -> dict[str, dict[str, Any]]:
-        """Group results by an arbitrary key function and summarize each group."""
+    ) -> dict[str, Any]:
         groups: dict[str, list[QueryResult]] = {}
         for r in results:
             key = str(key_fn(r.entry))
@@ -172,33 +167,28 @@ class RetrievalEvaluator:
 # ─── Report ────────────────────────────────────────────────────────── #
 
 
-def format_report(
-    results: list[QueryResult],
-    k: int,
-) -> str:
-    """Human-readable report: overall + per book + per difficulty + failures."""
+def format_report(results: list[QueryResult], k: int) -> str:
     lines: list[str] = []
 
     overall = RetrievalEvaluator.summarize(results, k)
     lines.append("=" * 70)
     lines.append(f"RETRIEVAL EVALUATION  (k={k}, n={overall['n']})")
     lines.append("=" * 70)
-    lines.append(f"Recall@{1}:     {overall['recall_at_1']:.2%}")
-    lines.append(f"Recall@{k}:     {overall['recall_at_k']:.2%}")
+    lines.append(f"Recall@1:      {overall['recall_at_1']:.2%}")
+    lines.append(f"Recall@{k}:      {overall['recall_at_k']:.2%}")
     lines.append(f"MRR:           {overall['mrr']:.4f}")
-    lines.append(f"Precision@{k}:  {overall['precision_at_k']:.2%}")
+    lines.append(f"Precision@{k}:   {overall['precision_at_k']:.2%}")
 
-    # By book
     by_book = RetrievalEvaluator.breakdown(results, k, lambda e: e.book, "book")
     lines.append("")
     lines.append("Per book:")
     for book, m in by_book["groups"].items():
         lines.append(f"  {book}")
         lines.append(
-            f"    Recall@1: {m['recall_at_1']:.2%}   Recall@{k}: {m['recall_at_k']:.2%}   MRR: {m['mrr']:.4f}"
+            f"    Recall@1: {m['recall_at_1']:.2%}   "
+            f"Recall@{k}: {m['recall_at_k']:.2%}   MRR: {m['mrr']:.4f}"
         )
 
-    # By difficulty
     by_diff = RetrievalEvaluator.breakdown(results, k, lambda e: e.difficulty, "difficulty")
     lines.append("")
     lines.append("Per difficulty:")
@@ -208,10 +198,10 @@ def format_report(
         m = by_diff["groups"][diff]
         lines.append(f"  {diff:<8} (n={m['n']})")
         lines.append(
-            f"    Recall@1: {m['recall_at_1']:.2%}   Recall@{k}: {m['recall_at_k']:.2%}   MRR: {m['mrr']:.4f}"
+            f"    Recall@1: {m['recall_at_1']:.2%}   "
+            f"Recall@{k}: {m['recall_at_k']:.2%}   MRR: {m['mrr']:.4f}"
         )
 
-    # Per-entry failures (only show failures in the report)
     lines.append("")
     lines.append("Failures:")
     failures = [r for r in results if not r.hit]
@@ -221,10 +211,8 @@ def format_report(
         for r in failures:
             top = r.retrieved[0] if r.retrieved else {}
             lines.append(
-                f"  {r.entry.id:<16} "
-                f"[{r.entry.difficulty}] "
-                f"gold=({r.entry.book[:20]}, p{r.entry.gold_pages}) "
-                f"top={top.get('book', '?')[:20]} p{top.get('page', '?')}"
+                f"  {r.entry.id:<16} [{r.entry.difficulty}] "
+                f"top={top.get('book', '?')[:22]} p{top.get('page', '?')}"
             )
 
     lines.append("=" * 70)
@@ -232,10 +220,9 @@ def format_report(
 
 
 def format_per_entry(results: list[QueryResult]) -> str:
-    """One line per golden query, showing rank of first correct hit."""
     lines: list[str] = []
     lines.append("")
-    lines.append("Per-query detail (rank = position of first correct hit):")
+    lines.append("Per-query detail (rank = position of first judged-relevant chunk):")
     lines.append(f"  {'id':<16} {'diff':<7} {'hit':<5} {'rank':<5} {'score':<7} query")
     lines.append("  " + "-" * 90)
     for r in results:
@@ -243,6 +230,7 @@ def format_per_entry(results: list[QueryResult]) -> str:
         hit_str = "yes" if r.hit else "no"
         score_str = f"{r.best_score:.3f}" if r.hit else "-"
         lines.append(
-            f"  {r.entry.id:<16} {r.entry.difficulty:<7} {hit_str:<5} {rank_str:<5} {score_str:<7} {r.entry.query[:60]}"
+            f"  {r.entry.id:<16} {r.entry.difficulty:<7} {hit_str:<5} "
+            f"{rank_str:<5} {score_str:<7} {r.entry.query[:60]}"
         )
     return "\n".join(lines)

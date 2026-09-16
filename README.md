@@ -1,4 +1,4 @@
-## 📄 Minimal README.md
+## README.md
 
 ```markdown
 # RAG System for Machine Learning Books

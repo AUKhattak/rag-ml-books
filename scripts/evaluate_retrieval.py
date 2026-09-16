@@ -1,5 +1,5 @@
 """
-Run retrieval evaluation against the golden dataset.
+Run retrieval evaluation against the golden dataset (LLM-as-judge).
 
 Usage:
     python scripts/evaluate_retrieval.py
@@ -13,6 +13,7 @@ import json
 import logging
 from pathlib import Path
 
+from evaluation.judge import make_judge
 from evaluation.retrieval_eval import (
     RetrievalEvaluator,
     format_per_entry,
@@ -33,17 +34,18 @@ GOLDEN_FILE = "data/evaluation/golden_dataset/qa_pairs_with_context.jsonl"
 INDEX_FILE = "data/processed/indexes/books_v1.faiss"
 METADATA_FILE = "data/processed/indexes/books_v1_meta.parquet"
 MODEL_KEY = "bge-small"
+JUDGE_MODEL_KEY = "gemini-flash-lite"
 RESULTS_DIR = "data/evaluation/results"
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Evaluate retrieval against golden dataset.")
-    parser.add_argument("--k", type=int, default=5, help="Top-k to retrieve (default: 5).")
+    parser = argparse.ArgumentParser(description="Evaluate retrieval (LLM-as-judge).")
+    parser.add_argument("--k", type=int, default=5, help="Top-k to retrieve.")
     parser.add_argument(
         "--output",
         type=str,
         default="retrieval_v1.json",
-        help="Filename for the saved results JSON (default: retrieval_v1.json).",
+        help="Filename for the saved results JSON.",
     )
     return parser.parse_args()
 
@@ -52,7 +54,7 @@ def main() -> None:
     args = parse_args()
 
     logger.info("=" * 70)
-    logger.info("📏 RETRIEVAL EVALUATION")
+    logger.info("📏 RETRIEVAL EVALUATION (LLM-as-judge)")
     logger.info("=" * 70)
 
     logger.info(f"Loading golden dataset: {GOLDEN_FILE}")
@@ -66,8 +68,11 @@ def main() -> None:
         model_key=MODEL_KEY,
     )
 
+    logger.info(f"Initializing judge ({JUDGE_MODEL_KEY})...")
+    judge = make_judge(model_key=JUDGE_MODEL_KEY)
+
     logger.info(f"Running {len(entries)} queries (k={args.k})...")
-    evaluator = RetrievalEvaluator(retriever)
+    evaluator = RetrievalEvaluator(retriever, judge)
     results = evaluator.evaluate(entries, k=args.k)
 
     report = format_report(results, k=args.k)
@@ -82,6 +87,7 @@ def main() -> None:
         "config": {
             "k": args.k,
             "model_key": MODEL_KEY,
+            "judge_model_key": JUDGE_MODEL_KEY,
             "index": INDEX_FILE,
             "golden_file": GOLDEN_FILE,
         },
@@ -98,10 +104,10 @@ def main() -> None:
                 "book": r.entry.book,
                 "difficulty": r.entry.difficulty,
                 "query": r.entry.query,
-                "gold_pages": r.entry.gold_pages,
                 "hit": r.hit,
                 "rank": r.rank,
                 "best_score": r.best_score,
+                "chunk_judgments": r.chunk_judgments,
                 "top_retrieved": [
                     {"book": c.get("book"), "page": c.get("page"), "score": c.get("score")}
                     for c in r.retrieved
