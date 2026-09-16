@@ -1,696 +1,547 @@
+"""
+Detailed extraction diagnostics for RAG retrieval quality.
+
+Reads documents_v1.json and reports metrics that matter for retrieval:
+mojibake density, chunk granularity, heading residue, caption survival,
+equation density, and per-book breakdowns.
+
+Usage:
+    python scripts/diagnose_extraction.py
+    python scripts/diagnose_extraction.py --documents path/to/docs.json
+    python scripts/diagnose_extraction.py --sample 5
+"""
+
+from __future__ import annotations
+
+import argparse
 import json
-import os
+import logging
 import re
 import statistics
-import sys
-from collections import defaultdict
+from collections import Counter, defaultdict
+from pathlib import Path
 from typing import Any
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+)
+logger = logging.getLogger(__name__)
 
 
-class ExtractionQualityAnalyzer:
-    """Comprehensive quality analysis for ML book PDF extraction"""
+# ─── Patterns ──────────────────────────────────────────────────────── #
 
-    def __init__(self, documents_path: str = "data/processed/chunks/documents_v1.json"):
-        with open(documents_path, encoding="utf-8") as f:
-            self.documents = json.load(f)
+# Common mojibake sequences produced by PyMuPDF + UTF-8/cp1252 confusion.
+# Not exhaustive — but covers the vast majority of what we saw in the
+# Hessian test.
+MOJIBAKE_PATTERNS = [
+    r"Ō[\wąćęłńóśźż]+",       # ŌłÆ, Ōłé, ŌłÜ, ...
+    r"Ž[\w]+",                 # ŽĄ, Žā, ...
+    r"╬[\w]*",                 # ╬, ...
+    r"â€[\w]*",                # â€™, â€œ, ...
+    r"Ã[\w]",                  # Ã©, Ã¨, ...
+    r"Â[\w]",                  # Â±, Â·
+    r"√[\w]",                  # √ó, √∑ (from ×, ÷)
+]
 
-        # Patterns for detection
-        self.math_patterns = {
-            "latex_inline": r"\$[^\$]+\$",
-            "latex_display": r"\\\[.*?\\\]",
-            "latex_commands": r"\\(begin|end|frac|sqrt|sum|int|prod|lim|log|sin|cos|tan|alpha|beta|gamma|delta|epsilon|theta|lambda|sigma|omega|partial|nabla|times|cdot|rightarrow|left|right)",
-            "subscript_superscript": r"[a-zA-Z0-9]\^\{[^\}]+\}|[a-zA-Z0-9]\_\{[^\}]+\}",
-            "math_symbols": r"[∑∫∏√∂∇∞∈∉⊂⊃∩∪∧∨∀∃¬]",
-            "equation_env": r"\\begin\{equation\}.*?\\end\{equation\}",
-            "align_env": r"\\begin\{align\}.*?\\end\{align\}",
-            "math_operators": r"[=≠≤≥±×÷]",
+# Section heading at start of chunk (after stripping leading whitespace)
+HEADING_START = re.compile(r"^\s*\d+(?:\.\d+)*\.?\s+[A-Z]")
+
+# "CHAPTER N" or "Chapter N" at start
+CHAPTER_START = re.compile(r"^\s*(?:CHAPTER|Chapter)\s+\d+")
+
+# All-caps heading on its own line
+ALLCAPS_HEADING = re.compile(r"^\s*[A-Z][A-Z\s\-]{5,}$", re.MULTILINE)
+
+# Page number alone on a line (1-4 digits, surrounded by newlines)
+PAGE_NUMBER_LINE = re.compile(r"(?:^|\n)\s*\d{1,4}\s*(?=\n|$)")
+
+# A page number in the first 80 chars of a chunk (leaked heading pattern)
+LEADING_PAGE_NUMBER = re.compile(r"^\s*(?:\S+\s+){0,8}?\b\d{2,4}\b\s+\S")
+
+# Missing space patterns that survived cleaning
+MISSING_SPACE = re.compile(r"[a-z][A-Z]|[a-z]\d{2,}")
+
+# Unicode math symbols (broad set)
+UNICODE_MATH = re.compile(
+    r"[\u2200-\u22FF\u2A00-\u2AFF\u27C0-\u27EF\u2980-\u29FF]"
+    r"|[∑∫∏√∂∇∞∈∉⊂⊃∩∪∧∨∀∃¬]"
+    r"|[=≠≤≥±×÷]"
+)
+
+# Repeated character sequences (letters only)
+REPEATED_CHAR = re.compile(r"([a-zA-Z])\1{2,}")
+
+
+# ─── Analyzer ──────────────────────────────────────────────────────── #
+
+
+class ExtractionDiagnostics:
+    """Detailed diagnostics for retrieval-relevant extraction quality."""
+
+    def __init__(self, documents: list[dict[str, Any]]):
+        self.documents = documents
+
+    # ─── Public API ─────────────────────────────────────────────────── #
+
+    def run(self) -> dict[str, Any]:
+        """Compute all diagnostics and return a structured report."""
+        return {
+            "overall": self._overall(),
+            "mojibake": self._mojibake(),
+            "chunk_size": self._chunk_size(),
+            "headings": self._headings(),
+            "captions": self._captions(),
+            "equations": self._equations(),
+            "text_hygiene": self._text_hygiene(),
+            "empty_pages": self._empty_pages(),
+            "per_book": self._per_book(),
+            "worst_chunks": self._worst_chunks(),
         }
 
-        self.encoding_issues = {
-            "mojibake": r"[\uFFFD\u0100-\u017F\u0400-\u04FF]",  # Common encoding errors
-            "control_chars": r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]",
+    # ─── Overall ────────────────────────────────────────────────────── #
+
+    def _overall(self) -> dict[str, Any]:
+        n = len(self.documents)
+        chars = sum(len(d["content"]) for d in self.documents)
+        words = sum(len(d["content"].split()) for d in self.documents)
+        return {
+            "n_documents": n,
+            "total_chars": chars,
+            "total_words": words,
+            "avg_chars_per_chunk": chars / n if n else 0,
+            "avg_words_per_chunk": words / n if n else 0,
         }
 
-        self.structural_patterns = {
-            "section": r"^(Chapter|Section|§)\s+\d+",
-            "subsection": r"^\d+\.\d+\s+",
-            "figure": r"(Figure|Fig\.)\s+\d+",
-            "table": r"Table\s+\d+",
-            "algorithm": r"(Algorithm|Alg\.)\s+\d+",
-            "definition": r"(Definition|Def\.)\s+\d+",
-            "theorem": r"(Theorem|Thm\.)\s+\d+",
-            "proof": r"Proof\.",
-            "example": r"(Example|Ex\.)\s+\d+",
-            "remark": r"(Remark|Rem\.)\s+\d+",
-        }
+    # ─── Mojibake ───────────────────────────────────────────────────── #
 
-        self.book_patterns = {
-            "Pattern Recognition and Machine Learning": {
-                "expected_math_density": 0.4,  # 40% pages with math
-                "expected_chapters": 14,
+    def _mojibake(self) -> dict[str, Any]:
+        chunk_hits: list[int] = []
+        pattern_counts: Counter[str] = Counter()
+        affected_patterns: dict[str, list[int]] = defaultdict(list)
+        total_mojibake_chars = 0
+
+        for i, doc in enumerate(self.documents):
+            content = doc["content"]
+            has_mojibake = False
+            for pat in MOJIBAKE_PATTERNS:
+                matches = re.findall(pat, content)
+                if matches:
+                    has_mojibake = True
+                    pattern_counts[pat] += len(matches)
+                    affected_patterns[pat].append(doc.get("page_number", i))
+                    total_mojibake_chars += sum(len(m) for m in matches)
+            if has_mojibake:
+                chunk_hits.append(i)
+
+        n = len(self.documents)
+        return {
+            "chunks_with_mojibake": len(chunk_hits),
+            "chunks_with_mojibake_pct": (len(chunk_hits) / n * 100) if n else 0,
+            "total_mojibake_chars": total_mojibake_chars,
+            "pattern_counts": dict(pattern_counts.most_common()),
+            "patterns_with_examples": {
+                pat: affected_patterns[pat][:5] for pat in pattern_counts
             },
-            "Deep Learning": {
-                "expected_math_density": 0.35,
-                "expected_chapters": 20,
-            },
         }
 
-    def analyze_extraction_quality(self) -> dict[str, Any]:
-        """Main analysis function with comprehensive metrics"""
-        results = {
-            "basic_stats": self._get_basic_stats(),
-            "page_quality": self._analyze_page_quality(),
-            "math_content": self._analyze_math_content(),
-            "text_quality": self._analyze_text_quality(),
-            "structural_quality": self._analyze_structure(),
-            "per_book_analysis": self._analyze_per_book(),
-            "chunking_recommendations": {},
-            "quality_score": 0,
-            "critical_issues": [],
-            "warnings": [],
-        }
+    # ─── Chunk size ─────────────────────────────────────────────────── #
 
-        # Generate quality score and recommendations
-        results["quality_score"] = self._calculate_quality_score(results)
-        results["chunking_recommendations"] = self._generate_chunking_recommendations(results)
+    def _chunk_size(self) -> dict[str, Any]:
+        lengths = sorted(len(d["content"]) for d in self.documents)
+        word_lengths = sorted(len(d["content"].split()) for d in self.documents)
 
-        return results
+        def pct(sorted_list: list[int], p: float) -> int:
+            if not sorted_list:
+                return 0
+            idx = min(int(len(sorted_list) * p), len(sorted_list) - 1)
+            return sorted_list[idx]
 
-    def _get_basic_stats(self) -> dict:
-        """Basic document statistics"""
-        total_pages = len(self.documents)
-        total_chars = sum(len(d["content"]) for d in self.documents)
-        total_words = sum(len(d["content"].split()) for d in self.documents)
+        chunks_per_page: Counter[tuple[str, int]] = Counter()
+        for d in self.documents:
+            key = (d.get("book_title", "?"), d.get("page_number", -1))
+            chunks_per_page[key] += 1
+
+        pages_with_multi = sum(1 for v in chunks_per_page.values() if v > 1)
+        pages_with_one = sum(1 for v in chunks_per_page.values() if v == 1)
 
         return {
-            "total_pages": total_pages,
-            "total_chars": total_chars,
-            "total_words": total_words,
-            "avg_chars_per_page": total_chars / total_pages,
-            "avg_words_per_page": total_words / total_pages,
-            "page_length_std": statistics.stdev([len(d["content"]) for d in self.documents])
-            if total_pages > 1
-            else 0,
-            "word_length_std": statistics.stdev([len(d["content"].split()) for d in self.documents])
-            if total_pages > 1
-            else 0,
+            "chars_min": lengths[0] if lengths else 0,
+            "chars_p50": pct(lengths, 0.50),
+            "chars_p90": pct(lengths, 0.90),
+            "chars_p99": pct(lengths, 0.99),
+            "chars_max": lengths[-1] if lengths else 0,
+            "chars_mean": statistics.mean(lengths) if lengths else 0,
+            "words_min": word_lengths[0] if word_lengths else 0,
+            "words_p50": pct(word_lengths, 0.50),
+            "words_p90": pct(word_lengths, 0.90),
+            "words_max": word_lengths[-1] if word_lengths else 0,
+            "words_mean": statistics.mean(word_lengths) if word_lengths else 0,
+            "unique_pages": len(chunks_per_page),
+            "pages_with_one_chunk": pages_with_one,
+            "pages_with_multiple_chunks": pages_with_multi,
+            "max_chunks_per_page": max(chunks_per_page.values()) if chunks_per_page else 0,
         }
 
-    def _analyze_page_quality(self) -> dict:
-        """Detailed page quality analysis"""
-        page_quality = {
-            "empty_pages": [],
-            "very_short_pages": [],  # < 50 words
-            "short_pages": [],  # 50-200 words
-            "normal_pages": [],  # 200-800 words
-            "long_pages": [],  # > 800 words
-            "page_length_distribution": {},
-            "content_density": {},
+    # ─── Headings ───────────────────────────────────────────────────── #
+
+    def _headings(self) -> dict[str, Any]:
+        heading_starts = 0
+        chapter_starts = 0
+        allcaps_starts = 0
+        page_number_starts = 0
+        samples: dict[str, list[str]] = {
+            "heading": [],
+            "chapter": [],
+            "allcaps": [],
+            "page_number_leak": [],
         }
 
         for doc in self.documents:
-            page_num = doc["page_number"]
             content = doc["content"]
-            word_count = len(content.split())
-            char_count = len(content)
+            first_line = content.split("\n", 1)[0] if content else ""
 
-            # Classify pages by length
-            if char_count < 100:
-                page_quality["empty_pages"].append(page_num)
-            elif word_count < 50:
-                page_quality["very_short_pages"].append(page_num)
-            elif word_count < 200:
-                page_quality["short_pages"].append(page_num)
-            elif word_count < 800:
-                page_quality["normal_pages"].append(page_num)
-            else:
-                page_quality["long_pages"].append(page_num)
+            if HEADING_START.match(content):
+                heading_starts += 1
+                if len(samples["heading"]) < 5:
+                    samples["heading"].append(first_line[:80])
 
-            # Content density (chars per word average)
-            density = char_count / word_count if word_count > 0 else 0
-            page_quality["content_density"][page_num] = density
+            if CHAPTER_START.match(content):
+                chapter_starts += 1
+                if len(samples["chapter"]) < 5:
+                    samples["chapter"].append(first_line[:80])
 
-            # Distribution bins
-            bin_key = f"{word_count // 100 * 100}-{(word_count // 100 + 1) * 100}"
-            page_quality["page_length_distribution"][bin_key] = (
-                page_quality["page_length_distribution"].get(bin_key, 0) + 1
+            if ALLCAPS_HEADING.match(first_line):
+                allcaps_starts += 1
+                if len(samples["allcaps"]) < 5:
+                    samples["allcaps"].append(first_line[:80])
+
+            if LEADING_PAGE_NUMBER.match(content[:120]):
+                page_number_starts += 1
+                if len(samples["page_number_leak"]) < 5:
+                    samples["page_number_leak"].append(content[:80])
+
+        n = len(self.documents)
+        return {
+            "chunks_starting_with_heading": heading_starts,
+            "chunks_starting_with_chapter": chapter_starts,
+            "chunks_starting_with_allcaps": allcaps_starts,
+            "chunks_with_leading_page_number": page_number_starts,
+            "total_chunks": n,
+            "samples": samples,
+        }
+
+    # ─── Captions ───────────────────────────────────────────────────── #
+
+    def _captions(self) -> dict[str, Any]:
+        figure_re = re.compile(r"\b(Figure|Fig\.)\s*\d+", re.IGNORECASE)
+        table_re = re.compile(r"\bTable\s*\d+", re.IGNORECASE)
+        algorithm_re = re.compile(r"\b(Algorithm|Alg\.)\s*\d+", re.IGNORECASE)
+        equation_re = re.compile(r"\b(Equation|Eq\.)\s*\d+", re.IGNORECASE)
+
+        counts: Counter[str] = Counter()
+        for doc in self.documents:
+            c = doc["content"]
+            counts["figure"] += len(figure_re.findall(c))
+            counts["table"] += len(table_re.findall(c))
+            counts["algorithm"] += len(algorithm_re.findall(c))
+            counts["equation"] += len(equation_re.findall(c))
+
+        return dict(counts)
+
+    # ─── Equations ──────────────────────────────────────────────────── #
+
+    def _equations(self) -> dict[str, Any]:
+        # Count chunks with a high density of Unicode math symbols.
+        # This is a proxy for "this chunk contains equations."
+        chunks_with_math = 0
+        high_density_chunks = 0
+        total_math_chars = 0
+
+        for doc in self.documents:
+            c = doc["content"]
+            math_chars = len(UNICODE_MATH.findall(c))
+            if math_chars > 0:
+                chunks_with_math += 1
+                total_math_chars += math_chars
+                if len(c) > 0 and (math_chars / len(c)) > 0.03:
+                    high_density_chunks += 1
+
+        n = len(self.documents)
+        return {
+            "chunks_with_math_symbols": chunks_with_math,
+            "chunks_with_math_symbols_pct": (chunks_with_math / n * 100) if n else 0,
+            "chunks_with_high_math_density": high_density_chunks,
+            "total_math_symbols": total_math_chars,
+        }
+
+    # ─── Text hygiene ───────────────────────────────────────────────── #
+
+    def _text_hygiene(self) -> dict[str, Any]:
+        repeated_hits = 0
+        missing_space_hits = 0
+        trailing_ws_hits = 0
+
+        for doc in self.documents:
+            c = doc["content"]
+            if REPEATED_CHAR.search(c):
+                repeated_hits += 1
+            if MISSING_SPACE.search(c):
+                missing_space_hits += 1
+            if re.search(r"[ \t]+\n", c):
+                trailing_ws_hits += 1
+
+        n = len(self.documents)
+        return {
+            "chunks_with_repeated_chars": repeated_hits,
+            "chunks_with_missing_spaces": missing_space_hits,
+            "chunks_with_trailing_whitespace": trailing_ws_hits,
+            "chunks_total": n,
+        }
+
+    # ─── Empty pages ────────────────────────────────────────────────── #
+
+    def _empty_pages(self) -> dict[str, Any]:
+        empties = []
+        for d in self.documents:
+            if len(d["content"]) < 100:
+                empties.append(
+                    {
+                        "book": d.get("book_title", "?"),
+                        "page": d.get("page_number", -1),
+                        "chars": len(d["content"]),
+                        "n_images": len(d.get("images", [])),
+                    }
+                )
+        return {
+            "count": len(empties),
+            "details": empties,
+        }
+
+    # ─── Per-book ───────────────────────────────────────────────────── #
+
+    def _per_book(self) -> dict[str, Any]:
+        books: dict[str, list[dict]] = defaultdict(list)
+        for d in self.documents:
+            books[d.get("book_title", "?")].append(d)
+
+        out: dict[str, Any] = {}
+        for book, docs in books.items():
+            mojibake = sum(
+                1
+                for d in docs
+                if any(re.search(p, d["content"]) for p in MOJIBAKE_PATTERNS)
             )
-
-        return page_quality
-
-    def _analyze_math_content(self) -> dict:
-        """Comprehensive math content analysis"""
-        math_analysis = {
-            "pages_with_math": [],
-            "math_density_by_page": {},
-            "math_pattern_counts": defaultdict(int),
-            "equation_extraction_quality": {
-                "complete_equations": 0,
-                "broken_equations": 0,
-                "inline_vs_display": {"inline": 0, "display": 0},
-                "complexity_distribution": defaultdict(int),
-            },
-            "math_preservation_quality": 0,  # Score 0-100
-            "math_context_quality": {},  # How well equations are explained
-        }
-
-        for doc in self.documents:
-            page_num = doc["page_number"]
-            content = doc["content"]
-
-            # Detect math on page
-            has_math = False
-            page_math_count = 0
-
-            for pattern_name, pattern in self.math_patterns.items():
-                matches = re.findall(pattern, content, re.DOTALL)
-                if matches:
-                    has_math = True
-                    page_math_count += len(matches)
-                    math_analysis["math_pattern_counts"][pattern_name] += len(matches)
-
-                    # Track equation complexity
-                    if pattern_name == "latex_commands":
-                        for match in matches:
-                            if any(cmd in match for cmd in ["frac", "sqrt", "sum", "int"]):
-                                math_analysis["equation_extraction_quality"][
-                                    "complexity_distribution"
-                                ]["complex"] += 1
-                            else:
-                                math_analysis["equation_extraction_quality"][
-                                    "complexity_distribution"
-                                ]["simple"] += 1
-
-            if has_math:
-                math_analysis["pages_with_math"].append(page_num)
-                math_analysis["math_density_by_page"][page_num] = page_math_count
-
-        # Calculate math preservation quality
-        total_math_pages = len(math_analysis["pages_with_math"])
-        total_pages = len(self.documents)
-        math_analysis["math_preservation_quality"] = int(
-            min(100, (total_math_pages / total_pages) * 200)
-        )
-        for doc in self.documents:
-            content = doc["content"]
-            # Check for math that might be broken
-            if re.search(r"\$[^\$]*\$[^\$]*\$", content):
-                math_analysis["equation_extraction_quality"]["broken_equations"] += 1
-            elif re.search(r"\\\[.*?\\\]", content) or re.search(r"\\\(.*?\\\)", content):
-                math_analysis["equation_extraction_quality"]["complete_equations"] += 1
-
-        return math_analysis
-
-    def _analyze_text_quality(self) -> dict:
-        """Detailed text quality analysis"""
-        text_quality = {
-            "encoding_issues": defaultdict(list),
-            "garbled_pages": [],
-            "non_ascii_distribution": {},
-            "repeated_char_pages": [],
-            "missing_space_pages": [],
-            "ocr_artifacts": defaultdict(int),
-            "line_break_issues": [],
-            "font_consistency": {},
-            "language_consistency": {},
-        }
-
-        for doc in self.documents:
-            page_num = doc["page_number"]
-            content = doc["content"]
-
-            # Check encoding issues
-            non_ascii_count = sum(1 for c in content if ord(c) > 127)
-            non_ascii_ratio = non_ascii_count / len(content) if content else 0
-            text_quality["non_ascii_distribution"][page_num] = non_ascii_ratio
-
-            if non_ascii_ratio > 0.1:
-                text_quality["garbled_pages"].append(page_num)
-
-            # Check for specific encoding issues
-            for issue_name, pattern in self.encoding_issues.items():
-                if re.search(pattern, content):
-                    text_quality["encoding_issues"][issue_name].append(page_num)
-
-            # Check for repeated characters (OCR artifacts)
-            repeated_chars = re.findall(r"([a-zA-Z])\1{2,}", content)
-            if repeated_chars:
-                text_quality["repeated_char_pages"].append(page_num)
-                text_quality["ocr_artifacts"]["repeated_chars"] += len(repeated_chars)
-
-            # Check for missing spaces (common PDF issue)
-            if re.search(r"[a-z][A-Z]", content) or re.search(r"[a-z]\d", content):
-                text_quality["missing_space_pages"].append(page_num)
-                text_quality["ocr_artifacts"]["missing_spaces"] += 1
-
-            # Check line break issues
-            if re.search(r"\n\s*\n\s*\n", content):
-                text_quality["line_break_issues"].append(page_num)
-
-        return text_quality
-
-    def _analyze_structure(self) -> dict:
-        """Analyze document structure preservation"""
-        structure = {
-            "section_headers": [],
-            "subsection_headers": [],
-            "section_hierarchy": defaultdict(int),
-            "figure_captions": [],
-            "table_captions": [],
-            "definitions_found": [],
-            "theorems_found": [],
-            "structural_elements_by_page": defaultdict(list),
-            "missing_structural_elements": [],
-            "page_breaks_preserved": [],
-        }
-
-        for doc in self.documents:
-            page_num = doc["page_number"]
-            content = doc["content"]
-
-            # Find structural elements
-            for element_name, pattern in self.structural_patterns.items():
-                matches = re.findall(pattern, content, re.MULTILINE | re.IGNORECASE)
-                if matches:
-                    structure["structural_elements_by_page"][page_num].extend(matches)
-
-                    if element_name == "section":
-                        structure["section_headers"].extend(matches)
-                    elif element_name == "subsection":
-                        structure["subsection_headers"].extend(matches)
-                    elif element_name == "figure":
-                        structure["figure_captions"].extend(matches)
-                    elif element_name == "table":
-                        structure["table_captions"].extend(matches)
-                    elif element_name in ["definition", "theorem"]:
-                        structure["definitions_found"].extend(
-                            matches
-                        ) if element_name == "definition" else structure["theorems_found"].extend(
-                            matches
-                        )
-
-            # Track section hierarchy depth
-            if any(
-                re.search(pattern, content, re.MULTILINE | re.IGNORECASE)
-                for pattern in [r"^Chapter\s+\d+", r"^Section\s+\d+"]
-            ):
-                structure["section_hierarchy"]["level_1"] += 1
-            elif re.search(r"^\d+\.\d+\s+", content, re.MULTILINE):
-                structure["section_hierarchy"]["level_2"] += 1
-            elif re.search(r"^\d+\.\d+\.\d+\s+", content, re.MULTILINE):
-                structure["section_hierarchy"]["level_3"] += 1
-
-        return structure
-
-    def _analyze_per_book(self) -> dict:
-        """Per-book quality analysis"""
-        per_book = {}
-
-        for doc in self.documents:
-            book = doc["book_title"]
-            if book not in per_book:
-                per_book[book] = {
-                    "pages": [],
-                    "total_words": 0,
-                    "total_chars": 0,
-                    "math_pages": [],
-                    "encoding_issues": [],
-                    "structural_elements": defaultdict(int),
-                    "quality_metrics": {},
-                }
-
-            per_book[book]["pages"].append(doc["page_number"])
-            per_book[book]["total_words"] += len(doc["content"].split())
-            per_book[book]["total_chars"] += len(doc["content"])
-
-            # Check for math on this page
-            for pattern in self.math_patterns.values():
-                if re.search(pattern, doc["content"], re.DOTALL):
-                    per_book[book]["math_pages"].append(doc["page_number"])
-                    break
-
-        # Calculate per-book quality metrics
-        for book, data in per_book.items():
-            total_pages = len(data["pages"])
-            math_pages = len(set(data["math_pages"]))
-
-            data["quality_metrics"] = {
-                "math_density": math_pages / total_pages if total_pages > 0 else 0,
-                "math_coverage": math_pages,
-                "avg_words_per_page": data["total_words"] / total_pages if total_pages > 0 else 0,
-                "avg_chars_per_page": data["total_chars"] / total_pages if total_pages > 0 else 0,
-                "expected_math_density": self.book_patterns.get(book, {}).get(
-                    "expected_math_density", 0.3
-                ),
+            chars = [len(d["content"]) for d in docs]
+            out[book] = {
+                "chunks": len(docs),
+                "chars_mean": statistics.mean(chars) if chars else 0,
+                "chars_max": max(chars) if chars else 0,
+                "chunks_with_mojibake": mojibake,
+                "chunks_with_mojibake_pct": (mojibake / len(docs) * 100) if docs else 0,
             }
+        return out
 
-            # Grade the extraction
-            expected_density = self.book_patterns.get(book, {}).get("expected_math_density", 0.3)
-            actual_density = data["quality_metrics"]["math_density"]
-            data["quality_metrics"]["math_extraction_grade"] = self._grade_extraction(
-                actual_density / expected_density if expected_density > 0 else 0
+    # ─── Worst chunks ───────────────────────────────────────────────── #
+
+    def _worst_chunks(self) -> list[dict[str, Any]]:
+        """Chunks with the most mojibake — these are the retrieval-killers."""
+        scored = []
+        for d in self.documents:
+            c = d["content"]
+            moj = sum(
+                len(re.findall(p, c)) for p in MOJIBAKE_PATTERNS
             )
-
-        return per_book
-
-    def _grade_extraction(self, ratio: float) -> str:
-        """Grade extraction quality based on math density ratio"""
-        if ratio >= 0.9:
-            return "A"
-        elif ratio >= 0.75:
-            return "B"
-        elif ratio >= 0.5:
-            return "C"
-        elif ratio >= 0.25:
-            return "D"
-        else:
-            return "F"
-
-    def _calculate_quality_score(self, results: dict) -> int:
-        """Calculate overall quality score (0-100)"""
-        score = 100
-
-        # Deduct for empty pages
-        empty_pages = len(results["page_quality"]["empty_pages"])
-        score -= min(20, empty_pages * 2)
-
-        # Deduct for garbled text
-        garbled = len(results["text_quality"]["garbled_pages"])
-        score -= min(30, garbled * 3)
-
-        # Deduct for poor math extraction
-        math_quality = results["math_content"]["math_preservation_quality"]
-        score -= max(0, (100 - math_quality) * 0.5)
-
-        # Deduct for encoding issues
-        encoding_issues = sum(
-            len(pages) for pages in results["text_quality"]["encoding_issues"].values()
-        )
-        score -= min(20, encoding_issues * 2)
-
-        # Deduct for missing structure
-        if not results["structural_quality"]["section_headers"]:
-            score -= 10
-
-        # Bonus for good structure preservation
-        if len(results["structural_quality"]["section_headers"]) > 20:
-            score = min(100, score + 5)
-
-        return max(0, min(100, score))
-
-    def _generate_chunking_recommendations(self, results: dict) -> dict:
-        """Generate specific chunking recommendations based on quality analysis"""
-        recommendations: dict[str, Any] = {
-            "chunk_size": 0,
-            "overlap_size": 0,
-            "strategies": [],
-            "special_cases": [],
-            "preprocessing_needed": [],
-        }
-
-        # Determine optimal chunk size based on page quality
-        avg_words = results["basic_stats"]["avg_words_per_page"]
-        if avg_words < 300:
-            recommendations["chunk_size"] = 512
-            recommendations["overlap_size"] = 80
-        elif avg_words < 500:
-            recommendations["chunk_size"] = 768
-            recommendations["overlap_size"] = 120
-        else:
-            recommendations["chunk_size"] = 1024
-            recommendations["overlap_size"] = 150
-
-        # Math-heavy content needs special handling
-        math_density = (
-            len(results["math_content"]["pages_with_math"]) / results["basic_stats"]["total_pages"]
-        )
-        if math_density > 0.3:
-            recommendations["strategies"].append("math_aware_chunking")
-            recommendations["special_cases"].append("equations_should_never_be_split")
-            recommendations["preprocessing_needed"].append("extract_latex_for_equations")
-
-            # Smaller chunks for math content
-            if recommendations["chunk_size"] > 512:
-                recommendations["chunk_size"] = 512
-
-        # Garbled text needs preprocessing
-        if results["text_quality"]["garbled_pages"]:
-            recommendations["preprocessing_needed"].append("fix_encoding_errors")
-            recommendations["strategies"].append("fallback_to_ocr")
-
-        # Missing structure needs semantic chunking
-        if not results["structural_quality"]["section_headers"]:
-            recommendations["strategies"].append("semantic_chunking")
-            recommendations["preprocessing_needed"].append("add_section_boundaries")
-
-        # Many short pages - need to combine
-        if (
-            len(results["page_quality"]["short_pages"])
-            > results["basic_stats"]["total_pages"] * 0.3
-        ):
-            recommendations["strategies"].append("combine_short_pages")
-            recommendations["overlap_size"] = max(50, recommendations["overlap_size"] + 50)
-
-        # OCR artifacts detected
-        if results["text_quality"]["ocr_artifacts"]:
-            recommendations["preprocessing_needed"].append("clean_ocr_artifacts")
-            recommendations["preprocessing_needed"].append("fix_missing_spaces")
-
-        # Add specific strategies for ML books
-        recommendations["strategies"].extend(
-            [
-                "preserve_reference_context",  # Citations and references are important
-                "keep_tables_intact",  # Tables often contain critical data
-                "maintain_code_blocks",  # ML books have algorithms
-            ]
-        )
-
-        # Chunking parameters
-        recommendations["chunking_params"] = {
-            "chunk_size": recommendations["chunk_size"],
-            "overlap": recommendations["overlap_size"],
-            "min_chunk_size": 100,
-            "max_chunk_size": recommendations["chunk_size"] * 1.5,
-            "split_method": "semantic"
-            if "semantic_chunking" in recommendations["strategies"]
-            else "fixed",
-            "preserve_equations": "math_aware_chunking" in recommendations["strategies"],
-        }
-
-        return recommendations
-
-    def generate_report(self, results: dict | None = None) -> str:
-        """Generate human-readable report"""
-        if results is None:
-            results = self.analyze_extraction_quality()
-
-        report = []
-        report.append("=" * 80)
-        report.append("📊 COMPREHENSIVE EXTRACTION QUALITY REPORT")
-        report.append("=" * 80)
-
-        # Overall Quality Score
-        report.append(f"\n🎯 OVERALL QUALITY SCORE: {results['quality_score']}/100")
-        report.append(f"   Grade: {self._grade_extraction(results['quality_score'] / 100)}")
-
-        # Critical Issues
-        if results["quality_score"] < 70:
-            report.append("\n⚠️  CRITICAL ISSUES FOUND:")
-            if results["text_quality"]["garbled_pages"]:
-                report.append(
-                    f"   • {len(results['text_quality']['garbled_pages'])} pages have garbled text"
+            if moj > 0:
+                scored.append(
+                    {
+                        "book": d.get("book_title", "?"),
+                        "page": d.get("page_number", -1),
+                        "mojibake_count": moj,
+                        "chars": len(c),
+                        "preview": c[:120].replace("\n", " "),
+                    }
                 )
-            if len(results["page_quality"]["empty_pages"]) > 10:
-                report.append(
-                    f"   • {len(results['page_quality']['empty_pages'])} empty pages found"
-                )
-            if results["math_content"]["math_preservation_quality"] < 50:
-                report.append(
-                    f"   • Poor math extraction quality ({results['math_content']['math_preservation_quality']:.1f}%)"
-                )
-
-        # Basic Statistics
-        report.append("\n📈 BASIC STATISTICS:")
-        report.append(f"   Total Pages: {results['basic_stats']['total_pages']:,}")
-        report.append(f"   Total Words: {results['basic_stats']['total_words']:,}")
-        report.append(f"   Total Characters: {results['basic_stats']['total_chars']:,}")
-        report.append(f"   Avg Words/Page: {results['basic_stats']['avg_words_per_page']:.1f}")
-        report.append(f"   Avg Chars/Page: {results['basic_stats']['avg_chars_per_page']:.1f}")
-
-        # Page Quality
-        report.append("\n📄 PAGE QUALITY:")
-        pq = results["page_quality"]
-        report.append(f"   Empty Pages (<100 chars): {len(pq['empty_pages'])}")
-        report.append(f"   Very Short Pages (<50 words): {len(pq['very_short_pages'])}")
-        report.append(f"   Short Pages (50-200 words): {len(pq['short_pages'])}")
-        report.append(f"   Normal Pages (200-800 words): {len(pq['normal_pages'])}")
-        report.append(f"   Long Pages (>800 words): {len(pq['long_pages'])}")
-
-        if pq["empty_pages"]:
-            report.append(f"   ⚠️  Empty pages: {pq['empty_pages'][:10]}")
-
-        # Math Content Quality
-        report.append("\n📐 MATH CONTENT QUALITY:")
-        mc = results["math_content"]
-        report.append(
-            f"   Pages with Math: {len(mc['pages_with_math'])} ({len(mc['pages_with_math']) / results['basic_stats']['total_pages'] * 100:.1f}%)"
-        )
-        report.append(f"   Math Preservation Quality: {mc['math_preservation_quality']:.1f}%")
-
-        if mc["equation_extraction_quality"]["complete_equations"] > 0:
-            report.append(
-                f"   Complete Equations Detected: {mc['equation_extraction_quality']['complete_equations']}"
-            )
-        if mc["equation_extraction_quality"]["broken_equations"] > 0:
-            report.append(
-                f"   ⚠️  Broken Equations: {mc['equation_extraction_quality']['broken_equations']}"
-            )
-
-        # Text Quality
-        report.append("\n🔤 TEXT QUALITY:")
-        tq = results["text_quality"]
-        report.append(f"   Pages with Encoding Issues: {len(set(tq['encoding_issues'].keys()))}")
-        report.append(f"   Garbled Pages: {len(tq['garbled_pages'])}")
-        report.append(f"   Pages with Repeated Characters: {len(tq['repeated_char_pages'])}")
-        report.append(f"   Pages with Missing Spaces: {len(tq['missing_space_pages'])}")
-
-        if tq["garbled_pages"]:
-            report.append(f"   ⚠️  Garbled pages: {tq['garbled_pages'][:10]}")
-
-        # Structural Quality
-        report.append("\n📚 STRUCTURAL QUALITY:")
-        sq = results["structural_quality"]
-        report.append(f"   Section Headers Found: {len(sq['section_headers'])}")
-        report.append(f"   Subsection Headers Found: {len(sq['subsection_headers'])}")
-        report.append(f"   Figure Captions Found: {len(sq['figure_captions'])}")
-        report.append(f"   Table Captions Found: {len(sq['table_captions'])}")
-        report.append(f"   Definitions Found: {len(sq['definitions_found'])}")
-        report.append(f"   Theorems Found: {len(sq['theorems_found'])}")
-
-        # Per-Book Analysis
-        report.append("\n📖 PER-BOOK QUALITY:")
-        for book, data in results["per_book_analysis"].items():
-            report.append(f"\n   {book}:")
-            report.append(f"      Pages: {len(data['pages'])}")
-            report.append(f"      Words: {data['total_words']:,}")
-            report.append(
-                f"      Math Pages: {len(set(data['math_pages']))} ({data['quality_metrics']['math_density'] * 100:.1f}%)"
-            )
-            report.append(
-                f"      Expected Math Density: {data['quality_metrics'].get('expected_math_density', 0.3) * 100:.1f}%"
-            )
-            report.append(
-                f"      Extraction Grade: {data['quality_metrics'].get('math_extraction_grade', 'N/A')}"
-            )
-            report.append(
-                f"      Avg Words/Page: {data['quality_metrics']['avg_words_per_page']:.1f}"
-            )
-
-        # Chunking Recommendations
-        report.append("\n🔧 CHUNKING RECOMMENDATIONS:")
-        rec = results["chunking_recommendations"]
-        report.append(f"\n   Optimal Chunk Size: {rec['chunk_size']} tokens")
-        report.append(f"   Optimal Overlap: {rec['overlap_size']} tokens")
-
-        report.append("\n   Recommended Strategies:")
-        for strategy in rec["strategies"]:
-            report.append(f"      • {strategy.replace('_', ' ').title()}")
-
-        if rec["preprocessing_needed"]:
-            report.append("\n   Preprocessing Required:")
-            for preprocess in rec["preprocessing_needed"]:
-                report.append(f"      • {preprocess.replace('_', ' ').title()}")
-
-        if rec["special_cases"]:
-            report.append("\n   Special Cases to Handle:")
-            for special in rec["special_cases"]:
-                report.append(f"      • {special.replace('_', ' ').title()}")
-
-        # Chunking Parameters
-        report.append("\n   Recommended Chunking Parameters:")
-        for key, value in rec["chunking_params"].items():
-            report.append(f"      • {key.replace('_', ' ').title()}: {value}")
-
-        # Action Items
-        report.append("\n📋 ACTION ITEMS:")
-        if results["quality_score"] < 80:
-            report.append("   1. Consider re-extracting PDFs with better tools:")
-            report.append("      - Use pymupdf4llm for structure preservation")
-            report.append("      - Use Marker or Nougat for math-heavy content")
-            report.append("      - Consider using pdfplumber as fallback")
-
-        if results["math_content"]["math_preservation_quality"] < 60:
-            report.append("   2. Improve math extraction:")
-            report.append("      - Use Mathpix API or grobid for equations")
-            report.append("      - Convert math to LaTeX before chunking")
-            report.append("      - Store equations separately with context")
-
-        if results["text_quality"]["garbled_pages"]:
-            report.append("   3. Clean garbled text:")
-            report.append("      - Fix encoding (UTF-8 normalization)")
-            report.append("      - Use OCR for heavily corrupted pages")
-
-        report.append("\n" + "=" * 80)
-        report.append("✅ Analysis Complete! Use these insights to optimize chunking.")
-        report.append("=" * 80)
-
-        return "\n".join(report)
-
-    def export_detailed_metrics(self, results: dict | None = None) -> dict:
-        """Export detailed metrics for programmatic use"""
-        if results is None:
-            results = self.analyze_extraction_quality()
-
-        # Flatten results for CSV export
-        flat_metrics = {
-            "quality_score": results["quality_score"],
-            "total_pages": results["basic_stats"]["total_pages"],
-            "total_words": results["basic_stats"]["total_words"],
-            "avg_words_per_page": results["basic_stats"]["avg_words_per_page"],
-            "math_density": len(results["math_content"]["pages_with_math"])
-            / results["basic_stats"]["total_pages"],
-            "math_preservation_quality": results["math_content"]["math_preservation_quality"],
-            "empty_pages": len(results["page_quality"]["empty_pages"]),
-            "garbled_pages": len(results["text_quality"]["garbled_pages"]),
-            "sections_found": len(results["structural_quality"]["section_headers"]),
-            "equations_found": results["math_content"]["equation_extraction_quality"][
-                "complete_equations"
-            ],
-            "broken_equations": results["math_content"]["equation_extraction_quality"][
-                "broken_equations"
-            ],
-            "recommended_chunk_size": results["chunking_recommendations"]["chunk_size"],
-            "recommended_overlap": results["chunking_recommendations"]["overlap_size"],
-        }
-
-        return flat_metrics
+        return sorted(scored, key=lambda x: -x["mojibake_count"])[:20]
 
 
-def main():
-    """Main execution function"""
-    analyzer = ExtractionQualityAnalyzer()
-    results = analyzer.analyze_extraction_quality()
-    report = analyzer.generate_report(results)
-    print(report)
+# ─── Report ────────────────────────────────────────────────────────── #
 
-    # Export metrics for further analysis
-    metrics = analyzer.export_detailed_metrics(results)
-    print("\n📊 Detailed metrics exported:")
-    for key, value in metrics.items():
-        print(f"   {key}: {value}")
 
-    # Save report to file
-    with open("data/processed/chunks/extraction_quality_report.txt", "w", encoding="utf-8") as f:
-        f.write(report)
+def format_report(r: dict[str, Any]) -> str:
+    lines: list[str] = []
+    sep = "=" * 78
 
-    # Save metrics to JSON
-    with open("data/processed/chunks/quality_metrics.json", "w", encoding="utf-8") as f:
-        json.dump(metrics, f, indent=2)
+    def add(s: str = "") -> None:
+        lines.append(s)
 
-    print("\n✅ Report saved to: data/processed/chunks/extraction_quality_report.txt")
-    print("✅ Metrics saved to: data/processed/chunks/quality_metrics.json")
+    add(sep)
+    add("📊 EXTRACTION DIAGNOSTICS — RETRIEVAL-FOCUSED")
+    add(sep)
+
+    # Overall
+    o = r["overall"]
+    add("")
+    add("OVERALL")
+    add(f"  Chunks:              {o['n_documents']:,}")
+    add(f"  Total chars:         {o['total_chars']:,}")
+    add(f"  Total words:         {o['total_words']:,}")
+    add(f"  Avg chars/chunk:     {o['avg_chars_per_chunk']:.0f}")
+    add(f"  Avg words/chunk:     {o['avg_words_per_chunk']:.0f}")
+
+    # Mojibake
+    m = r["mojibake"]
+    add("")
+    add("🔴 MOJIBAKE  (corrupted math symbols — retrieval killer)")
+    add(f"  Chunks with mojibake: {m['chunks_with_mojibake']:,} "
+        f"({m['chunks_with_mojibake_pct']:.1f}%)")
+    add(f"  Total mojibake chars: {m['total_mojibake_chars']:,}")
+    if m["pattern_counts"]:
+        add("  Top patterns:")
+        for pat, count in list(m["pattern_counts"].items())[:8]:
+            add(f"    {pat!r}: {count:,}")
+
+    # Chunk size
+    cs = r["chunk_size"]
+    add("")
+    add("📏 CHUNK SIZE")
+    add(f"  chars:  min={cs['chars_min']}  "
+        f"p50={cs['chars_p50']}  p90={cs['chars_p90']}  "
+        f"p99={cs['chars_p99']}  max={cs['chars_max']}  "
+        f"mean={cs['chars_mean']:.0f}")
+    add(f"  words:  min={cs['words_min']}  "
+        f"p50={cs['words_p50']}  p90={cs['words_p90']}  "
+        f"max={cs['words_max']}  mean={cs['words_mean']:.0f}")
+    add(f"  Unique pages:           {cs['unique_pages']:,}")
+    add(f"  Pages with 1 chunk:     {cs['pages_with_one_chunk']:,}")
+    add(f"  Pages with >1 chunk:    {cs['pages_with_multiple_chunks']:,}")
+    add(f"  Max chunks on one page: {cs['max_chunks_per_page']}")
+
+    # Headings
+    h = r["headings"]
+    add("")
+    add("📚 HEADING RESIDUE IN CHUNKS")
+    add(f"  Start with N.N heading:     {h['chunks_starting_with_heading']:,}")
+    add(f"  Start with Chapter N:       {h['chunks_starting_with_chapter']:,}")
+    add(f"  Start with ALL-CAPS:        {h['chunks_starting_with_allcaps']:,}")
+    add(f"  Leading page number (≤120): {h['chunks_with_leading_page_number']:,}")
+    if h["samples"]["page_number_leak"]:
+        add("  Example leaks:")
+        for s in h["samples"]["page_number_leak"][:3]:
+            add(f"    {s!r}")
+
+    # Captions
+    c = r["captions"]
+    add("")
+    add("🖼  CAPTION SURVIVAL")
+    add(f"  Figure refs:    {c.get('figure', 0):,}")
+    add(f"  Table refs:     {c.get('table', 0):,}")
+    add(f"  Algorithm refs: {c.get('algorithm', 0):,}")
+    add(f"  Equation refs:  {c.get('equation', 0):,}")
+
+    # Equations
+    e = r["equations"]
+    add("")
+    add("∑  MATH CONTENT")
+    add(f"  Chunks w/ math symbols:      {e['chunks_with_math_symbols']:,} "
+        f"({e['chunks_with_math_symbols_pct']:.1f}%)")
+    add(f"  Chunks w/ high math density: {e['chunks_with_high_math_density']:,}")
+    add(f"  Total math symbols:          {e['total_math_symbols']:,}")
+
+    # Text hygiene
+    t = r["text_hygiene"]
+    add("")
+    add("🧹 TEXT HYGIENE")
+    add(f"  Chunks w/ repeated chars:      {t['chunks_with_repeated_chars']:,}")
+    add(f"  Chunks w/ missing spaces:      {t['chunks_with_missing_spaces']:,}")
+    add(f"  Chunks w/ trailing whitespace: {t['chunks_with_trailing_whitespace']:,}")
+
+    # Empty pages
+    ep = r["empty_pages"]
+    add("")
+    add("📄 EMPTY PAGES  (<100 chars)")
+    add(f"  Count: {ep['count']}")
+    for d in ep["details"][:10]:
+        add(f"    {d['book']}  p{d['page']}  chars={d['chars']}  "
+            f"images={d['n_images']}")
+
+    # Per book
+    add("")
+    add("📖 PER BOOK")
+    for book, stats in r["per_book"].items():
+        add(f"  {book}")
+        add(f"    Chunks:               {stats['chunks']:,}")
+        add(f"    Chars mean/max:       {stats['chars_mean']:.0f} / "
+            f"{stats['chars_max']:,}")
+        add(f"    Chunks w/ mojibake:   {stats['chunks_with_mojibake']:,} "
+            f"({stats['chunks_with_mojibake_pct']:.1f}%)")
+
+    # Worst chunks
+    wc = r["worst_chunks"]
+    if wc:
+        add("")
+        add("🔴 WORST 10 CHUNKS BY MOJIBAKE COUNT")
+        add(f"  {'book':<24} {'p':>5} {'mojibake':>9} {'chars':>7}  preview")
+        add("  " + "-" * 100)
+        for w in wc[:10]:
+            add(f"  {w['book'][:22]:<24} {w['page']:>5} "
+                f"{w['mojibake_count']:>9} {w['chars']:>7}  {w['preview'][:60]}")
+
+    add("")
+    add(sep)
+    return "\n".join(lines)
+
+
+# ─── CLI ───────────────────────────────────────────────────────────── #
+
+
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description="Diagnose extraction quality.")
+    p.add_argument(
+        "--documents",
+        default="data/processed/chunks/documents_v1.json",
+        help="Path to documents_v1.json",
+    )
+    p.add_argument(
+        "--output",
+        default="data/processed/chunks/extraction_diagnostics.json",
+        help="Where to save the JSON report.",
+    )
+    p.add_argument(
+        "--sample",
+        type=int,
+        default=0,
+        help="If >0, only analyze first N documents (fast sanity check).",
+    )
+    return p.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+
+    path = Path(args.documents)
+    if not path.exists():
+        logger.error(f"File not found: {path}")
+        return
+
+    logger.info(f"Loading documents from {path}")
+    with open(path, encoding="utf-8") as f:
+        documents = json.load(f)
+    logger.info(f"Loaded {len(documents):,} documents")
+
+    if args.sample > 0:
+        documents = documents[: args.sample]
+        logger.info(f"Sampling first {len(documents)} documents")
+
+    diag = ExtractionDiagnostics(documents)
+    report = diag.run()
+    print(format_report(report))
+
+    out = Path(args.output)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with open(out, "w", encoding="utf-8") as f:
+        json.dump(report, f, indent=2, ensure_ascii=False)
+    logger.info(f"💾 JSON report saved to {out}")
 
 
 if __name__ == "__main__":
