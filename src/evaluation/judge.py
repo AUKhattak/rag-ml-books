@@ -119,19 +119,29 @@ def make_judge(model_key: str = "gemini-flash-lite") -> Callable[[str], str]:
 # ─── The judge decision ────────────────────────────────────────────── #
 
 
-JUDGE_TEMPLATE = """You are evaluating retrieval quality for a RAG system on machine learning textbooks.
+JUDGE_TEMPLATE = """You are a strict retrieval-quality judge for a RAG system on machine learning textbooks.
+
+You will see a QUERY, a REFERENCE ANSWER, and a RETRIEVED CHUNK.
+
+Your job: decide whether the retrieved chunk contains the specific facts stated in the reference answer.
+
+Rules:
+- YES only if the chunk explicitly states or clearly contains the key facts in the reference answer.
+- NO if the chunk is merely on the same topic, mentions related concepts, or discusses the topic at a different level of detail.
+- NO if the chunk contradicts the reference answer.
+- NO if the chunk is too vague or generic to confirm the reference facts.
+- Being on the same topic is NOT enough. The facts must be present.
 
 Query:
 {query}
 
-Expected answer (summary):
+Reference answer (contains the specific facts that must appear in the chunk):
 {expected}
 
 Retrieved chunk:
 {chunk}
 
-Does the retrieved chunk contain information that answers the query?
-Answer with a single word: YES or NO. No explanation."""
+Answer with a single word: YES or NO."""
 
 
 def chunk_answers_query(
