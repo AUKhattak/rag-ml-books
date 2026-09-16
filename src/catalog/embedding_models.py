@@ -23,12 +23,6 @@ class ModelConfig:
             "batch_size": 32,
             "description": "Good general purpose",
         },
-        "openai-small": {
-            "name": "text-embedding-3-small",
-            "dimension": 1536,
-            "batch_size": 100,
-            "description": "OpenAI API, highest quality",
-        },
     }
 
     @classmethod

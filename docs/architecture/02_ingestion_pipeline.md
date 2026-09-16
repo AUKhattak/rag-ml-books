@@ -74,12 +74,12 @@ Production-grade PDF loader with image extraction and text cleaning.
 
 **Key Features:**
 - **Multi-Book Processing**: Handles multiple PDFs with metadata
-- **Intelligent Text Extraction**: 
+- **Intelligent Text Extraction**:
   - PyMuPDF (fitz) backend
   - Automatic text cleaning integration
   - Empty page filtering
 
-- **Image Extraction**: 
+- **Image Extraction**:
   - Extracts embedded images as PNG/JPEG
   - Organizes by book title
   - Preserves image metadata (dimensions, format, page)
