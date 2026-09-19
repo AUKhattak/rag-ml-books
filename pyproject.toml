@@ -15,6 +15,7 @@ dependencies = [
     "faiss-cpu",
     "google-genai",
     "python-dotenv",
+    "streamlit",
 ]
 
 [project.optional-dependencies]
