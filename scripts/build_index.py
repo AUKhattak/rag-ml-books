@@ -23,9 +23,9 @@ logger = logging.getLogger(__name__)
 
 
 # ─── Config ────────────────────────────────────────────────────────── #
-EMBEDDINGS_FILE = "data/processed/embeddings/embeddings_v1.parquet"
-INDEX_FILE = "data/processed/indexes/books_v1.faiss"
-METADATA_FILE = "data/processed/indexes/books_v1_meta.parquet"
+EMBEDDINGS_FILE = "data/processed/embeddings/embeddings_v2.parquet"
+INDEX_FILE = "data/processed/indexes/books_v2.faiss"
+METADATA_FILE = "data/processed/indexes/books_v2_meta.parquet"
 
 EXPECTED_DIM = 384  # bge-small-en-v1.5 output dimension
 

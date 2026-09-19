@@ -30,8 +30,8 @@ def load_chunks(file_path: str):
 
 
 def main():
-    CHUNKS_FILE = "data/processed/chunks/chunks_v1.jsonl"
-    OUTPUT_FILE = "data/processed/embeddings/embeddings_v1.parquet"
+    CHUNKS_FILE = "data/processed/chunks/chunks_v2.jsonl"
+    OUTPUT_FILE = "data/processed/embeddings/embeddings_v2.parquet"
     MODEL_NAME = "bge-small"
     BATCH_SIZE = 32
 

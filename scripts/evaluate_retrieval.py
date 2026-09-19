@@ -4,6 +4,7 @@ Run retrieval evaluation against the golden dataset (LLM-as-judge).
 Usage:
     python scripts/evaluate_retrieval.py
     python scripts/evaluate_retrieval.py --k 5
+    python scripts/evaluate_retrieval.py --golden path/to/golden.jsonl --output run_name.json
 """
 
 from __future__ import annotations
@@ -20,6 +21,8 @@ from evaluation.retrieval_eval import (
     format_report,
     load_golden_dataset,
 )
+from llm.errors import LLMError
+from llm.retry import RetryExhausted
 from retrieval.retriever import Retriever
 
 logging.basicConfig(
@@ -30,9 +33,9 @@ logger = logging.getLogger(__name__)
 
 
 # ─── Config ────────────────────────────────────────────────────────── #
-GOLDEN_FILE = "data/evaluation/golden_dataset/qa_pairs_with_context.jsonl"
-INDEX_FILE = "data/processed/indexes/books_v1.faiss"
-METADATA_FILE = "data/processed/indexes/books_v1_meta.parquet"
+DEFAULT_GOLDEN_FILE = "data/evaluation/golden_dataset/qa_pairs_with_context.jsonl"
+INDEX_FILE = "data/processed/indexes/books_v2.faiss"
+METADATA_FILE = "data/processed/indexes/books_v2_meta.parquet"
 MODEL_KEY = "bge-small"
 JUDGE_MODEL_KEY = "gemini-flash-lite"
 RESULTS_DIR = "data/evaluation/results"
@@ -42,9 +45,15 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Evaluate retrieval (LLM-as-judge).")
     parser.add_argument("--k", type=int, default=5, help="Top-k to retrieve.")
     parser.add_argument(
+        "--golden",
+        type=str,
+        default=DEFAULT_GOLDEN_FILE,
+        help="Path to golden dataset JSONL.",
+    )
+    parser.add_argument(
         "--output",
         type=str,
-        default="retrieval_v1.json",
+        default="retrieval_v3.json",
         help="Filename for the saved results JSON.",
     )
     return parser.parse_args()
@@ -57,8 +66,8 @@ def main() -> None:
     logger.info("📏 RETRIEVAL EVALUATION (LLM-as-judge)")
     logger.info("=" * 70)
 
-    logger.info(f"Loading golden dataset: {GOLDEN_FILE}")
-    entries = load_golden_dataset(GOLDEN_FILE)
+    logger.info(f"Loading golden dataset: {args.golden}")
+    entries = load_golden_dataset(args.golden)
     logger.info(f"✅ Loaded {len(entries)} golden queries")
 
     logger.info("Loading retriever...")
@@ -73,7 +82,16 @@ def main() -> None:
 
     logger.info(f"Running {len(entries)} queries (k={args.k})...")
     evaluator = RetrievalEvaluator(retriever, judge)
-    results = evaluator.evaluate(entries, k=args.k)
+
+    try:
+        results = evaluator.evaluate(entries, k=args.k)
+    except (LLMError, RetryExhausted) as e:
+        logger.error(f"❌ Evaluation aborted: {e}")
+        logger.info("💡 Partial judgments are preserved in the judge cache.")
+        logger.info(
+            "   Re-run later (after the quota resets) to finish the remaining queries."
+        )
+        return
 
     report = format_report(results, k=args.k)
     print(report)
@@ -89,7 +107,7 @@ def main() -> None:
             "model_key": MODEL_KEY,
             "judge_model_key": JUDGE_MODEL_KEY,
             "index": INDEX_FILE,
-            "golden_file": GOLDEN_FILE,
+            "golden_file": args.golden,
         },
         "overall": RetrievalEvaluator.summarize(results, args.k),
         "per_book": RetrievalEvaluator.breakdown(results, args.k, lambda e: e.book, "book")[

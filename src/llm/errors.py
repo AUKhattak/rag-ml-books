@@ -5,6 +5,7 @@ Providers (Gemini, OpenAI, Anthropic) return HTTP-style errors that we
 need to distinguish into:
     - retryable (transient): rate limits, server errors, timeouts
     - non-retryable (permanent): bad requests, auth failures, missing models
+    - daily-quota exhausted: a special case of 429 that retrying won't fix
 
 This module normalizes those into a small set of predicates so calling
 code doesn't have to know provider-specific error shapes.
@@ -33,7 +34,7 @@ class LLMError(Exception):
 RETRYABLE_STATUS = {
     408,  # Request Timeout
     409,  # Conflict (rare, but sometimes transient)
-    429,  # Too Many Requests
+    429,  # Too Many Requests (may be per-minute OR per-day)
     500,  # Internal Server Error
     502,  # Bad Gateway
     503,  # Service Unavailable
@@ -51,6 +52,21 @@ def is_rate_limit_status(status: int | None) -> bool:
 
 def is_server_error_status(status: int | None) -> bool:
     return status is not None and 500 <= status < 600
+
+
+def is_daily_quota_error(err: LLMError) -> bool:
+    """
+    True when the provider reports a per-DAY quota (not per-minute).
+
+    Retrying won't help — the quota resets at midnight (provider-specific time).
+    Detect this case so we can fail fast instead of sleeping through 5 attempts.
+    """
+    if err.status_code != 429:
+        return False
+    msg = err.message
+    # Gemini: quotaId contains "PerDayPerProjectPerModel"
+    # Also matches "GenerateRequestsPerDay" and similar.
+    return "PerDay" in msg or "per day" in msg.lower()
 
 
 # ─── Provider-agnostic classifier ──────────────────────────────────── #
@@ -85,14 +101,16 @@ def classify_provider_error(exc: Exception, provider: str = "unknown") -> LLMErr
                     status = candidate
                     break
 
-        retryable = is_retryable_status(status)
-
-        return LLMError(
+        err = LLMError(
             message=message,
             status_code=status,
-            retryable=retryable,
+            retryable=is_retryable_status(status),
             provider=provider,
         )
+        # Daily-quota 429s are NOT retryable (retrying won't help).
+        if is_daily_quota_error(err):
+            err.retryable = False
+        return err
 
     # Unknown provider: conservatively not retryable.
     return LLMError(message=message, provider=provider, retryable=False)

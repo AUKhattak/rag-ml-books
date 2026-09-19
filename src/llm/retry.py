@@ -11,7 +11,12 @@ import logging
 import time
 from typing import Callable, TypeVar
 
-from llm.errors import LLMError, classify_provider_error, is_rate_limit_status
+from llm.errors import (
+    LLMError,
+    classify_provider_error,
+    is_daily_quota_error,
+    is_rate_limit_status,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +52,8 @@ def retry_call(
 
     Raises:
         RetryExhausted:   If max_attempts are used and all fail.
-        LLMError:         If a non-retryable error occurs.
+        LLMError:         If a non-retryable error occurs, or if the daily
+                          quota is exhausted.
     """
     last_err: LLMError | None = None
 
@@ -57,6 +63,16 @@ def retry_call(
         except Exception as exc:  # noqa: BLE001
             err = classify_provider_error(exc, provider=provider)
 
+            # Daily quota exhaustion: no point retrying.
+            if is_daily_quota_error(err):
+                logger.error(
+                    f"[{provider}] daily quota exhausted. "
+                    f"Quota resets at the provider's midnight. "
+                    f"Consider switching to another model or waiting."
+                )
+                raise err from exc
+
+            # Other non-retryable errors.
             if not err.retryable:
                 logger.error(f"Non-retryable error: {err}")
                 raise err from exc
