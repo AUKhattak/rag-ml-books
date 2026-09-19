@@ -1,14 +1,25 @@
-## README.md
-
-```markdown
 # RAG System for Machine Learning Books
 
-Production-ready RAG system for ML textbooks — ingests PDFs, chunks, embeds, retrieves, generates.
+Retrieval-Augmented Generation (RAG) system for Machine Learning textbooks. This pipeline ingests PDFs, processes text and images, generates embeddings, and performs retrieval and generation to answer complex ML queries based on the ingested literature. The system currently processes 2 comprehensive Machine Learning books ("Deep Learning" by Ian Goodfellow, and "Pattern Recognition and Machine Learning" by Christopher Bishop).
+
+> 📖 **Documentation:** For an in-depth look at the system architecture, data flow, and pipeline stages, please review our [Detailed Architecture Documentation](docs/architecture/README.md).
+
+## 🖥️ Interface
+
+![Streamlit UI Screenshot](docs/diagrams/ui_screenshot.jpg)
+
+## Dataset
+
+The current dataset consists of the following books:
+- **Deep Learning** by Ian Goodfellow, Yoshua Bengio, and Aaron Courville
+- **Pattern Recognition and Machine Learning** by Christopher M. Bishop
 
 ## 📁 Structure
 
-```
+```text
 rag_ml_books/
+├── app/
+│   └── streamlit_app.py
 ├── data/
 │   ├── raw/
 │   │   ├── pdfs/                     # Input PDFs
@@ -19,114 +30,115 @@ rag_ml_books/
 │   │   │   ├── documents_v1.json     # Pages
 │   │   │   ├── chunks_v1.jsonl       # Chunks (JSONL)
 │   │   │   └── chunks_v1.parquet     # Chunks (Parquet)
-│   │   └── embeddings/embeddings_v1.parquet
-│   └── cache/embeddings/embeddings_cache.pkl
+│   │   ├── embeddings/embeddings_v1.parquet
+│   │   └── indexes/books_v1.faiss
+│   ├── cache/embeddings/embeddings_cache.pkl
+│   └── evaluation/                   # Evaluation results & judge cache
 ├── src/
-│   ├── ingestion/     # pdf_loader.py, chunker.py, metadata_extractor.py
-│   ├── embedding/     # embedder.py, model_config.py, cache_manager.py
-│   ├── storage/ retrieval/ generation/ evaluation/
+│   ├── ingestion/     # pdf_loader.py, preprocessor.py, metadata_extractor.py
+│   ├── chunking/      # chunker.py
+│   ├── embedding/     # embedder.py, cache_manager.py
+│   ├── indexing/      # faiss_index.py
+│   ├── retrieval/     # retriever.py
+│   ├── generation/    # generator.py, prompts.py
+│   ├── evaluation/    # judge.py, retrieval_eval.py
+│   ├── llm/           # llm integration and retry logic
+│   ├── catalog/       # embedding_models.py, llm_models.py
+│   ├── config/        # settings.py, logging_config.yaml
+│   └── utils/         # text_cleaner.py
 ├── scripts/
 │   ├── run_ingestion.py
 │   ├── check_extraction_quality.py
 │   ├── chunk_documents.py
-│   ├── chunk_verify.py
-│   └── test_embeddings.py
+│   ├── diagnose_chunks.py
+│   ├── generate_embeddings.py
+│   ├── build_index.py
+│   ├── query.py
+│   ├── answer.py
+│   └── evaluate_retrieval.py
+├── docs/              # Project documentation and architecture diagrams
 ├── venv/
-├── requirements.txt
-└── README.md
+├── .env               # Environment variables
+├── pyproject.toml     # Project configuration and dependencies
+└── README.md          # Project overview and commands
 ```
 
-## Quick Start
+## Project Commands
 
+### Setup
 ```bash
-# Setup
-python -m venv venv
-venv\Scripts\activate          # Windows
-source venv/bin/activate       # macOS/Linux
-pip install -r requirements.txt
-
-# Pipeline
-python scripts/run_ingestion.py            # PDFs → documents_v1.json
-python scripts/check_extraction_quality.py # Quality report
-python scripts/chunk_documents.py          # documents → chunks_v1.jsonl/.parquet
-python scripts/chunk_verify.py             # Verify chunks
-python scripts/test_embeddings.py          # Test embedder (5 chunks)
+pip install -e .                     # install package + deps
+pre-commit install                   # wire git hooks
+streamlit run app/streamlit_app.py   # start UI
 ```
 
-## Scripts
-
-| Script | Purpose |
-|--------|---------|
-| `run_ingestion.py` | Extract text + images from PDFs → `documents_v1.json` |
-| `check_extraction_quality.py` | Validate extraction quality |
-| `chunk_documents.py` | Split pages → `chunks_v1.jsonl` + `.parquet` |
-| `chunk_verify.py` | Show chunk stats (count, size, samples) |
-| `test_embeddings.py` | Test embedder with 5 chunks + cache |
-
-## Dependencies
-
-```txt
-pymupdf>=1.23.0
-nltk>=3.8.0
-tqdm>=4.66.0
-sentence-transformers>=2.2.0
-pandas>=2.0.0
-pyarrow>=14.0.0
-```
-
-Install: `pip install -r requirements.txt`
-
-## Commands
-
+### Ingestion
 ```bash
-# Activate env
-venv\Scripts\activate
-
-# Run pipeline
-python scripts/run_ingestion.py
-python scripts/chunk_documents.py
-python scripts/generate_embeddings.py
-
-# Inspect data
-python -c "import json; d=json.load(open('data/processed/chunks/documents_v1.json')); print(len(d))"
-python -c "import json; d=[json.loads(l) for l in open('data/processed/chunks/chunks_v1.jsonl')]; print(len(d))"
-python -c "from src.embedding.cache_manager import CacheManager; print(CacheManager().get_stats())"
-
-# Clean
-rm -rf data/processed/chunks/* data/cache/embeddings/*
+python scripts/run_ingestion.py             # PDFs → documents_v1.json
+python scripts/check_extraction_quality.py  # extraction diagnostics
 ```
 
-## Status
+### Chunking
+```bash
+python scripts/chunk_documents.py                    # documents → chunks_vN.jsonl
+python scripts/diagnose_chunks.py --chunks <path>    # chunk diagnostics
+python scripts/inspect_overlap.py                    # check chunk overlap
+```
 
-| Stage | Status |
-|-------|--------|
-| PDF Loading | ✅ 1,548 pages |
-| Image Extraction | ✅ Saved |
-| Quality Check | ✅ Clean |
-| Chunking | ✅ 1,728 chunks |
-| Embedding Setup | ✅ Done |
-| Embedding Test | 🔄 Next |
-| Full Embeddings | ⬜ |
-| Vector DB | ⬜ |
-| Retrieval | ⬜ |
-| Generation | ⬜ |
-| Evaluation | ⬜ |
+### Embedding
+```bash
+python scripts/generate_embeddings.py     # chunks → embeddings_vN.parquet
+```
 
-**Dataset:** 2 books · 1,548 pages · 1,728 chunks · avg 2,030 chars/chunk
+### Indexing
+```bash
+python scripts/build_index.py             # embeddings → books_vN.faiss + meta
+```
 
-**Models:** `bge-small` (384d) · `bge-large` (1024d) · `all-mpnet` (768d) · `openai-small` (1536d)
+### Retrieval
+```bash
+python scripts/query.py "your question"   # retrieve top-k chunks
+```
 
-## Next Steps
+### Generation
+```bash
+python scripts/answer.py "your question"  # full RAG: query → answer
+```
 
-1. `python scripts/test_embeddings.py`
-2. Create `scripts/generate_embeddings.py` → embed all 1,728 chunks
-3. Build vector index (FAISS/ChromaDB)
-4. Implement retrieval + generation
+### Evaluation
+```bash
+python scripts/evaluate_retrieval.py      # LLM-as-judge retrieval eval
+```
 
-## Notes
+### Maintenance
+```bash
+ruff check .                        # lint
+ruff check . --fix                  # auto-fix lint issues
+ruff format .                       # format code
+git add -A && git commit -m "..."   # commit
+git push                            # push to remote
+```
 
-- **Chunking:** 500 chars, 100 overlap, min 50 chars
-- **Cache:** MD5(chunk_id) → embedding, saved once per run
-- **Cache invalidated** by chunk size or model change
+### Streamlit
+```bash
+streamlit run app/streamlit_app.py    # start UI
+Ctrl+C                                # stop UI
+```
 
----
+## RAG Evaluation
+
+Evaluation is a first-class concern in this project. The system ships with an automated evaluation framework and has a clear roadmap toward full end-to-end coverage.
+
+**Currently Implemented**
+- **Retrieval Evaluation (LLM-as-Judge):** Each query in the golden dataset is run through the retriever, and a lightweight LLM judge (`gemini-flash-lite`) decides whether any of the top-k returned chunks genuinely contains the required facts. Metrics reported include `Recall@1`, `Recall@k`, `MRR`, and `Precision@k`, broken down by book and difficulty level.
+
+**Planned**
+- **Faithfulness:** Verifies that the generated answer is grounded in the retrieved context — no hallucination.
+- **Toxicity:** Detects harmful or inappropriate outputs triggered by adversarial queries.
+- **Contextual Precision & Recall:** Measures how well the retrieved context serves the generation step.
+- **Answer Relevancy:** Scores how directly the generated answer addresses the original question.
+
+**Long-Term Vision**
+The evaluation roadmap leads toward a comprehensive, automated test suite covering every layer of the pipeline — from individual component checks (retrieval, chunking quality) all the way up to integration-level and app-level testing. This will be runnable as part of a CI/CD workflow to catch regressions before they reach production.
+
+> 📋 **For full details on metrics, the golden dataset schema, the LLM judge setup, and DeepEval integration plans, see the [Evaluation Documentation](docs/evaluation/evaluation.md).**
