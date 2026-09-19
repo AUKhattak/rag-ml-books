@@ -2,7 +2,13 @@
 
 Retrieval-Augmented Generation (RAG) system for Machine Learning textbooks. This pipeline ingests PDFs, processes text and images, generates embeddings, and performs retrieval and generation to answer complex ML queries based on the ingested literature. The system currently processes 2 comprehensive Machine Learning books ("Deep Learning" by Ian Goodfellow, and "Pattern Recognition and Machine Learning" by Christopher Bishop).
 
-## 📚 Dataset
+> 📖 **Documentation:** For an in-depth look at the system architecture, data flow, and pipeline stages, please review our [Detailed Architecture Documentation](docs/architecture/README.md).
+
+## 🖥️ Interface
+
+![Streamlit UI Screenshot](docs/diagrams/ui_screenshot.jpg)
+
+## Dataset
 
 The current dataset consists of the following books:
 - **Deep Learning** by Ian Goodfellow, Yoshua Bengio, and Aaron Courville
@@ -57,7 +63,7 @@ rag_ml_books/
 └── README.md          # Project overview and commands
 ```
 
-## 🚀 Project Commands
+## Project Commands
 
 ### Setup
 ```bash
