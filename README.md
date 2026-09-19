@@ -124,3 +124,21 @@ git push                            # push to remote
 streamlit run app/streamlit_app.py    # start UI
 Ctrl+C                                # stop UI
 ```
+
+## RAG Evaluation
+
+Evaluation is a first-class concern in this project. The system ships with an automated evaluation framework and has a clear roadmap toward full end-to-end coverage.
+
+**Currently Implemented**
+- **Retrieval Evaluation (LLM-as-Judge):** Each query in the golden dataset is run through the retriever, and a lightweight LLM judge (`gemini-flash-lite`) decides whether any of the top-k returned chunks genuinely contains the required facts. Metrics reported include `Recall@1`, `Recall@k`, `MRR`, and `Precision@k`, broken down by book and difficulty level.
+
+**Planned**
+- **Faithfulness:** Verifies that the generated answer is grounded in the retrieved context — no hallucination.
+- **Toxicity:** Detects harmful or inappropriate outputs triggered by adversarial queries.
+- **Contextual Precision & Recall:** Measures how well the retrieved context serves the generation step.
+- **Answer Relevancy:** Scores how directly the generated answer addresses the original question.
+
+**Long-Term Vision**
+The evaluation roadmap leads toward a comprehensive, automated test suite covering every layer of the pipeline — from individual component checks (retrieval, chunking quality) all the way up to integration-level and app-level testing. This will be runnable as part of a CI/CD workflow to catch regressions before they reach production.
+
+> 📋 **For full details on metrics, the golden dataset schema, the LLM judge setup, and DeepEval integration plans, see the [Evaluation Documentation](docs/evaluation/evaluation.md).**
